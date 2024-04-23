@@ -1,4 +1,8 @@
+use std::fs;
+
 use http::{Response, StatusCode};
+
+use super::{ServerError, ServerResult};
 
 pub type ResponseBody = Vec<u8>;
 
@@ -22,6 +26,7 @@ impl BasicResponse for ServerResponse {}
 
 pub trait IntoResponse {
     fn create(code: StatusCode, body: ResponseBody) -> Self;
+    fn file(filename: &str) -> ServerResult<ServerResponse>;
     fn download(filename: &str, body: ResponseBody) -> Self;
     fn json(body: &str) -> Self;
     fn into_bytes(self) -> Vec<u8>;
@@ -30,6 +35,12 @@ pub trait IntoResponse {
 impl IntoResponse for ServerResponse {
     fn create(code: StatusCode, body: ResponseBody) -> Self {
         Self::create_base(code, vec![("Content-Type", "text/plain")], Some(body))
+    }
+    fn file(filename: &str) -> ServerResult<Self> {
+        match fs::read(filename) {
+            Ok(body) => Ok(ServerResponse::download(filename, body)),
+            Err(e) => Err(ServerError::new(StatusCode::NOT_FOUND, &format!("{}", e))),
+        }
     }
     fn download(filename: &str, body: ResponseBody) -> Self {
         Self::create_base(

@@ -8,8 +8,8 @@ use tokio::{
 };
 
 use super::{
-    inbound::connection::Connection,
-    router::{RequestHandler, Router},
+    connection::Connection,
+    router::{RequestHandler, RequestType, Router},
     Authentication, IntoResponse, ServerConfig, ServerError, ServerResponse, ServerResult,
 };
 
@@ -19,17 +19,22 @@ pub struct HTTPServer {
     worker_pool: Arc<Semaphore>,
 }
 
+pub enum ServerRoute {
+    REST(&'static str, Method, RequestHandler),
+    Resource(&'static str, &'static str),
+}
+
 impl HTTPServer {
-    pub fn new(config: ServerConfig, routes: Vec<(&str, Method, RequestHandler)>) -> Self {
+    pub fn new(config: ServerConfig, routes: Vec<ServerRoute>) -> ServerResult<Self> {
         let mut router = Router::default();
-        for (path, method, handler) in routes {
-            router.add(path, method, handler).unwrap();
+        for route in routes {
+            router.add(route)?;
         }
-        Self {
+        Ok(Self {
             config,
             router,
             worker_pool: Arc::new(Semaphore::new(5)),
-        }
+        })
     }
 
     pub async fn start(self) -> ServerResult<JoinHandle<()>> {
@@ -100,7 +105,7 @@ impl ConnectionWorker {
         println!("Connection from: {}", self.connection.from);
         let result = match self.handle().await {
             Ok(response) => self.connection.reply(response).await,
-            Err(e) => self.reply_error(e).await,
+            Err(e) => self.connection.reply_error(e).await,
         };
         permit.semaphore().add_permits(1);
         permit.forget();
@@ -126,18 +131,11 @@ impl ConnectionWorker {
         };
 
         match self.router.get(&request) {
-            Ok((handler, args)) => {
-                let response = handler(request, args)?;
-                Ok(response)
-            }
+            Ok((req, args)) => match req {
+                RequestType::REST(handler) => handler(request, args),
+                RequestType::Resource(path) => ServerResponse::file(&path),
+            },
             Err(e) => Err(e),
         }
-    }
-
-    async fn reply_error(&mut self, error: ServerError) -> ServerResult<()> {
-        println!("Error: {}", error.error);
-        self.connection
-            .reply(ServerResponse::create(error.code, error.error.into_bytes()))
-            .await
     }
 }

@@ -3,6 +3,7 @@ mod parser;
 mod router;
 
 pub use parser::PathArgumentMap;
+pub use router::RequestType;
 pub use router::Router;
 
 use super::{ServerRequest, ServerResponse, ServerResult};

@@ -1,5 +1,6 @@
-mod inbound;
-mod outbound;
+mod connection;
+mod request;
+mod response;
 mod router;
 mod server;
 
@@ -10,14 +11,12 @@ use std::{
 
 use http::StatusCode;
 
-pub use inbound::request::ServerRequest;
-pub use outbound::response::{IntoResponse, ServerResponse};
+pub use request::{RequestArgs, ServerRequest};
+pub use response::{IntoResponse, ServerResponse};
 pub use router::PathArgumentMap;
-pub use server::HTTPServer;
+pub use server::{HTTPServer, ServerRoute};
 
 use crate::common::log::{log_message, LogLevel};
-
-use self::inbound::request::RequestArgs;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]

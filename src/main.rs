@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use http::StatusCode;
 use server::{
     HTTPServer, IntoResponse, PathArgumentMap, ServerConfig, ServerError, ServerRequest,
-    ServerResponse, ServerResult,
+    ServerResponse, ServerResult, ServerRoute,
 };
 
 pub mod common;
@@ -14,7 +14,13 @@ async fn main() -> ServerResult<()> {
     let mut config = ServerConfig::default();
     config.allow_address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
     config.allow_user("test", "123");
-    let server = HTTPServer::new(config, vec![("/sum/[a]/[b]/", http::Method::GET, sum)]);
+    let server = HTTPServer::new(
+        config,
+        vec![
+            ServerRoute::REST("/sum/[a]/[b]/", http::Method::GET, sum),
+            ServerRoute::Resource("favicon.ico", "/tmp/test"),
+        ],
+    )?;
     let handler = server.start().await?;
     let _ = handler.await;
     Ok(())

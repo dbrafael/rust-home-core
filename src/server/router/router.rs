@@ -5,13 +5,18 @@ use std::{
 
 use http::Method;
 
-use crate::server::{ServerError, ServerRequest, ServerResult};
+use crate::server::{server::ServerRoute, ServerError, ServerRequest, ServerResult};
 
 use super::{
     endpoint::Endpoint,
-    parser::{PathArgumentMap, QueryPathTokenList, RoutePathToken, RoutePathTokenList},
+    parser::{PathArgumentMap, QueryPath, RoutePathToken, RoutePathTokenList},
     RequestHandler,
 };
+
+pub enum RequestType {
+    REST(RequestHandler),
+    Resource(String),
+}
 
 // ServerRouter is responsible for managing and resolving paths, both when registering and handling
 #[derive(Default, Clone)]
@@ -20,18 +25,29 @@ pub struct Router {
 }
 
 impl Router {
-    pub fn add(&mut self, path: &str, method: Method, handler: RequestHandler) -> ServerResult<()> {
-        RouteNode::register_path(self.root.clone(), path.try_into()?, method, handler)?;
+    pub fn add(&mut self, route: ServerRoute) -> ServerResult<()> {
+        RouteNode::register_path(self.root.clone(), route)?;
         Ok(())
     }
 
-    pub fn get(&self, request: &ServerRequest) -> ServerResult<(RequestHandler, PathArgumentMap)> {
+    pub fn get(&self, request: &ServerRequest) -> ServerResult<(RequestType, PathArgumentMap)> {
         let path = request.uri().path();
         let method = request.method().clone();
-        let tokens: QueryPathTokenList = path.try_into()?;
+        let tokens: QueryPath = path.try_into()?;
+        if tokens.resource.is_none() && method != Method::GET {
+            return Err(ServerError::err("Invalid method"));
+        }
         let (l_node, args) = tokens.resolve(self.root.clone())?;
         let node = l_node.lock().unwrap();
-        Ok((node.endpoint.get(method)?, args))
+        println!("tokens: {:?}", tokens);
+        println!("node: {:?}", node);
+        match tokens.resource {
+            None => Ok((RequestType::REST(node.endpoint.get(method)?), args)),
+            Some(res) => match node.get_resource(&res) {
+                Some(path) => Ok((RequestType::Resource(path.to_string()), args)),
+                None => Err(ServerError::err("Resource not found")),
+            },
+        }
     }
 }
 
@@ -47,6 +63,7 @@ enum RouteChildren {
 pub struct RouteNode {
     endpoint: Endpoint,
     children: Option<RouteChildren>,
+    resources: HashMap<String, String>, // name to fs path
 }
 pub type RouteNodeSafe = Arc<Mutex<RouteNode>>;
 
@@ -71,22 +88,32 @@ impl RouteNode {
     }
 
     // Registers a given path and creates missing sub-paths if possible/needed
-    pub fn register_path(
-        node: RouteNodeSafe,
-        mut path: RoutePathTokenList,
-        method: Method,
-        callback: RequestHandler,
-    ) -> ServerResult<()> {
+    pub fn register_path(node: RouteNodeSafe, route: ServerRoute) -> ServerResult<()> {
+        let mut path: RoutePathTokenList = match route {
+            ServerRoute::REST(path, _, _) => path.try_into()?,
+            ServerRoute::Resource(path, _) => path.try_into()?,
+        };
+
+        println!("Registering path: {:?}", path);
+
         let mut node = node;
-        loop {
-            let token = path.0.pop_front();
-            node = RouteNode::add_or_get_single_node(node, token.unwrap())?;
-            if path.0.is_empty() {
-                break;
+        if path.tokens.len() > 0 {
+            loop {
+                let token = path.tokens.pop_front();
+                node = RouteNode::add_or_get_single_node(node, token.unwrap())?;
+                if path.tokens.is_empty() {
+                    break;
+                }
             }
         }
         let mut lock = node.lock().unwrap();
-        lock.register_method(method, callback)
+        match route {
+            ServerRoute::REST(_, method, handler) => lock.register_method(method, handler),
+            ServerRoute::Resource(name, path) => {
+                lock.resources.insert(name.to_string(), path.to_string());
+                Ok(())
+            }
+        }
     }
 
     pub fn register_method(&mut self, method: Method, handler: RequestHandler) -> ServerResult<()> {
@@ -125,5 +152,13 @@ impl RouteNode {
                 }
             }
         }
+    }
+
+    pub fn register_resource(&mut self, name: &str, path: &str) {
+        self.resources.insert(name.to_string(), path.to_string());
+    }
+
+    pub fn get_resource(&self, name: &str) -> Option<&str> {
+        self.resources.get(name).map(|s| s.as_str())
     }
 }

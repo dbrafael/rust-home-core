@@ -4,9 +4,8 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::server::{IntoResponse, ServerError, ServerResponse, ServerResult};
-
-use super::request::ServerRequest;
+use super::{response::IntoResponse, ServerResponse, ServerResult};
+use super::{ServerError, ServerRequest};
 
 pub struct Connection {
     pub from: SocketAddr,
@@ -26,6 +25,14 @@ impl Connection {
                 &format!("{}", e),
             )),
         }
+    }
+
+    pub async fn reply_error(&mut self, error: ServerError) -> ServerResult<()> {
+        self.reply(ServerResponse::create(
+            error.code,
+            error.error.as_bytes().to_vec(),
+        ))
+        .await
     }
 
     pub async fn request(&mut self) -> ServerResult<ServerRequest> {
