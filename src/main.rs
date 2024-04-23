@@ -1,26 +1,23 @@
-use http::{Method, Request, StatusCode};
+use std::net::{IpAddr, Ipv4Addr};
+
+use http::StatusCode;
 use server::{
-    IntoResponse, PathArgumentMap, RouteManager, ServerError, ServerRequest, ServerResponse,
-    ServerResult,
+    HTTPServer, IntoResponse, PathArgumentMap, ServerConfig, ServerError, ServerRequest,
+    ServerResponse, ServerResult,
 };
 
+pub mod common;
 mod server;
 
-fn main() {
-    let mut route_handler = RouteManager::default();
-    route_handler
-        .register("api/users", Method::GET, sum)
-        .expect("Error registering route");
-    route_handler
-        .register("api/sum/[a]/[b]", Method::GET, sum)
-        .expect("Error registering route");
-
-    let (handler, vars) = route_handler.get("api/sum/123/876", Method::GET).unwrap();
-
-    let request: ServerRequest = Request::builder().body(None).unwrap();
-    println!("{:?}", vars);
-
-    let _ = handler(request, vars);
+#[tokio::main]
+async fn main() -> ServerResult<()> {
+    let mut config = ServerConfig::default();
+    config.allow_address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+    config.allow_user("test", "123");
+    let server = HTTPServer::new(config, vec![("/sum/[a]/[b]/", http::Method::GET, sum)]);
+    let handler = server.start().await?;
+    let _ = handler.await;
+    Ok(())
 }
 
 fn sum(_: ServerRequest, args: PathArgumentMap) -> ServerResult<ServerResponse> {
@@ -38,5 +35,5 @@ fn sum(_: ServerRequest, args: PathArgumentMap) -> ServerResult<ServerResponse> 
     };
     println!("{} + {} = {}", a, b, a + b);
 
-    Ok(ServerResponse::create(StatusCode::OK, vec![]))
+    Ok(ServerResponse::create(StatusCode::OK, vec![(a + b) as u8]))
 }

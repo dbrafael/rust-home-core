@@ -5,73 +5,55 @@ use std::{
 
 use http::Method;
 
-use crate::server::{ServerError, ServerResult};
+use crate::server::{ServerError, ServerRequest, ServerResult};
 
 use super::{
-    parser::{PathArgumentMap, QueryPathTokens, RoutePathToken, RoutePathTokens},
-    route::ServerRoute,
+    endpoint::Endpoint,
+    parser::{PathArgumentMap, QueryPathTokenList, RoutePathToken, RoutePathTokenList},
     RequestHandler,
 };
 
-pub struct RouteManager {
-    root: Arc<Mutex<RouteNode>>,
+// ServerRouter is responsible for managing and resolving paths, both when registering and handling
+#[derive(Default, Clone)]
+pub struct Router {
+    root: RouteNodeSafe,
 }
 
-impl Default for RouteManager {
-    fn default() -> Self {
-        Self {
-            root: Arc::new(Mutex::new(RouteNode::default())),
-        }
-    }
-}
-
-impl RouteManager {
-    pub fn register(
-        &mut self,
-        path: &str,
-        method: Method,
-        handler: RequestHandler,
-    ) -> ServerResult<()> {
-        let tokens: RoutePathTokens = path.try_into()?;
-        RouteNode::get_add_missing(self.root.clone(), tokens, method, handler)?;
+impl Router {
+    pub fn add(&mut self, path: &str, method: Method, handler: RequestHandler) -> ServerResult<()> {
+        RouteNode::register_path(self.root.clone(), path.try_into()?, method, handler)?;
         Ok(())
     }
 
-    pub fn get(
-        &self,
-        path: &str,
-        method: Method,
-    ) -> ServerResult<(RequestHandler, PathArgumentMap)> {
-        let tokens: QueryPathTokens = path.try_into()?;
+    pub fn get(&self, request: &ServerRequest) -> ServerResult<(RequestHandler, PathArgumentMap)> {
+        let path = request.uri().path();
+        let method = request.method().clone();
+        let tokens: QueryPathTokenList = path.try_into()?;
         let (l_node, args) = tokens.resolve(self.root.clone())?;
         let node = l_node.lock().unwrap();
-        Ok((node.handler.get(method)?, args))
+        Ok((node.endpoint.get(method)?, args))
     }
 }
 
+// Routes can have a single variable children (/api/[userId]/...) or multiple static children
 #[derive(Debug, Clone)]
 enum RouteChildren {
-    Static(HashMap<String, Arc<Mutex<RouteNode>>>),
-    Variable(String, Arc<Mutex<RouteNode>>),
+    Static(HashMap<String, RouteNodeSafe>),
+    Variable(String, RouteNodeSafe),
 }
 
-#[derive(Debug, Clone)]
+// A route node is a single token in the path
+#[derive(Default, Debug, Clone)]
 pub struct RouteNode {
-    handler: ServerRoute,
+    endpoint: Endpoint,
     children: Option<RouteChildren>,
 }
-
-impl Default for RouteNode {
-    fn default() -> Self {
-        Self {
-            handler: ServerRoute::default(),
-            children: None,
-        }
-    }
-}
+pub type RouteNodeSafe = Arc<Mutex<RouteNode>>;
 
 impl RouteNode {
-    pub fn get_var(node: Arc<Mutex<RouteNode>>) -> Option<(String, Arc<Mutex<RouteNode>>)> {
+    // These methods should be used when translating a user request to a path, var name is not
+    // known by the user so we must infer the node type and return it accordingly
+    pub fn get_var(node: RouteNodeSafe) -> Option<(String, RouteNodeSafe)> {
         let node = node.lock().unwrap();
         match &node.children {
             Some(RouteChildren::Variable(name, ptr)) => Some((name.to_string(), ptr.clone())),
@@ -79,7 +61,8 @@ impl RouteNode {
         }
     }
 
-    pub fn get_static(node: Arc<Mutex<RouteNode>>, token: &str) -> Option<Arc<Mutex<RouteNode>>> {
+    // Likewise
+    pub fn get_static(node: RouteNodeSafe, token: &str) -> Option<RouteNodeSafe> {
         let node = node.lock().unwrap();
         match &node.children {
             Some(RouteChildren::Static(map)) => map.get(token).cloned(),
@@ -87,32 +70,33 @@ impl RouteNode {
         }
     }
 
-    pub fn get_add_missing(
-        node: Arc<Mutex<RouteNode>>,
-        mut path: RoutePathTokens,
+    // Registers a given path and creates missing sub-paths if possible/needed
+    pub fn register_path(
+        node: RouteNodeSafe,
+        mut path: RoutePathTokenList,
         method: Method,
         callback: RequestHandler,
     ) -> ServerResult<()> {
         let mut node = node;
         loop {
             let token = path.0.pop_front();
-            node = RouteNode::get_add_missing_single_node(node, token.unwrap())?;
+            node = RouteNode::add_or_get_single_node(node, token.unwrap())?;
             if path.0.is_empty() {
                 break;
             }
         }
         let mut lock = node.lock().unwrap();
-        lock.add_method(method, callback)
+        lock.register_method(method, callback)
     }
 
-    pub fn add_method(&mut self, method: Method, handler: RequestHandler) -> ServerResult<()> {
-        self.handler.register(method, handler)
+    pub fn register_method(&mut self, method: Method, handler: RequestHandler) -> ServerResult<()> {
+        self.endpoint.register(method, handler)
     }
 
-    fn get_add_missing_single_node(
-        p_node: Arc<Mutex<RouteNode>>,
+    fn add_or_get_single_node(
+        p_node: RouteNodeSafe,
         token: RoutePathToken,
-    ) -> ServerResult<Arc<Mutex<RouteNode>>> {
+    ) -> ServerResult<RouteNodeSafe> {
         let mut node = p_node.lock().unwrap();
         match token {
             RoutePathToken::Static(name) => match &node.children {

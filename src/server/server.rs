@@ -1,51 +1,143 @@
-use tokio::net::TcpStream;
+use std::sync::Arc;
 
-use super::{route::RequestHandler, RouteManager, ServerConfig, ServerResult};
+use http::{Method, StatusCode};
+use tokio::{
+    net::TcpListener,
+    sync::{OwnedSemaphorePermit, Semaphore},
+    task::JoinHandle,
+};
 
-pub trait HTTPServer {
-    fn new(config: ServerConfig) -> Self;
-    fn register(
-        &mut self,
-        path: &str,
-        method: http::Method,
-        handler: RequestHandler,
-    ) -> ServerResult<()>;
-    async fn start(&self) -> ServerResult<()>;
-    async fn close(&self) -> ServerResult<()>;
-    async fn handle(&self, stream: TcpStream) -> ServerResult<()>;
-}
+use super::{
+    inbound::connection::Connection,
+    router::{RequestHandler, Router},
+    Authentication, IntoResponse, ServerConfig, ServerError, ServerResponse, ServerResult,
+};
 
-pub struct AsyncServer {
+pub struct HTTPServer {
     config: ServerConfig,
-    routes: RouteManager,
+    router: Router,
+    worker_pool: Arc<Semaphore>,
 }
 
-impl HTTPServer for AsyncServer {
-    fn new(config: ServerConfig) -> Self {
+impl HTTPServer {
+    pub fn new(config: ServerConfig, routes: Vec<(&str, Method, RequestHandler)>) -> Self {
+        let mut router = Router::default();
+        for (path, method, handler) in routes {
+            router.add(path, method, handler).unwrap();
+        }
         Self {
             config,
-            routes: RouteManager::default(),
+            router,
+            worker_pool: Arc::new(Semaphore::new(5)),
         }
     }
 
-    fn register(
-        &mut self,
-        path: &str,
-        method: http::Method,
-        handler: RequestHandler,
-    ) -> ServerResult<()> {
-        self.routes.register(path, method, handler)
+    pub async fn start(self) -> ServerResult<JoinHandle<()>> {
+        let listener = match TcpListener::bind(self.config.server_address).await {
+            Ok(l) => l,
+            Err(e) => {
+                return Err(ServerError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Error binding to address: {}", e),
+                ));
+            }
+        };
+        let handle = tokio::spawn(async move {
+            println!("Server started at: {}", self.config.server_address);
+            loop {
+                if let Ok(con) = self.wait_request(&listener).await {
+                    let permit = match self.worker_pool.clone().acquire_owned().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            println!("Error acquiring semaphore: {}", e);
+                            continue;
+                        }
+                    };
+                    ConnectionWorker::spawn(self.config.clone(), self.router.clone(), con, permit);
+                } else {
+                    println!("Error accepting connection");
+                }
+            }
+        });
+        Ok(handle)
     }
 
-    async fn start(&self) -> ServerResult<()> {
-        unimplemented!()
+    async fn wait_request(&self, listener: &TcpListener) -> ServerResult<Connection> {
+        match listener.accept().await {
+            Ok((stream, addr)) => Ok(Connection::from_connection(stream, addr)),
+            Err(e) => {
+                return Err(ServerError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Error accepting connection: {}", e),
+                ));
+            }
+        }
+    }
+}
+
+struct ConnectionWorker {
+    config: ServerConfig,
+    router: Router,
+    connection: Connection,
+}
+
+impl ConnectionWorker {
+    pub fn spawn(
+        config: ServerConfig,
+        router: Router,
+        connection: Connection,
+        permit: OwnedSemaphorePermit,
+    ) -> JoinHandle<ServerResult<()>> {
+        let mut worker = Self {
+            config,
+            router,
+            connection,
+        };
+        tokio::spawn(async move { worker.start(permit).await })
     }
 
-    async fn close(&self) -> ServerResult<()> {
-        unimplemented!()
+    async fn start(&mut self, permit: OwnedSemaphorePermit) -> ServerResult<()> {
+        println!("Connection from: {}", self.connection.from);
+        let result = match self.handle().await {
+            Ok(response) => self.connection.reply(response).await,
+            Err(e) => self.reply_error(e).await,
+        };
+        permit.semaphore().add_permits(1);
+        permit.forget();
+        result
     }
 
-    async fn handle(&self, stream: TcpStream) -> ServerResult<()> {
-        unimplemented!()
+    async fn handle(&mut self) -> ServerResult<ServerResponse> {
+        if !self.config.allowed(&self.connection.from.ip()) {
+            return Err(ServerError::new(
+                StatusCode::UNAUTHORIZED,
+                "Authentication failed",
+            ));
+        };
+
+        let request = self.connection.request().await?;
+        let auth = Authentication::from_request(&request)?;
+
+        if !self.config.authenticate(auth) {
+            return Err(ServerError::new(
+                StatusCode::UNAUTHORIZED,
+                "Authentication failed",
+            ));
+        };
+
+        match self.router.get(&request) {
+            Ok((handler, args)) => {
+                let response = handler(request, args)?;
+                Ok(response)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn reply_error(&mut self, error: ServerError) -> ServerResult<()> {
+        println!("Error: {}", error.error);
+        self.connection
+            .reply(ServerResponse::create(error.code, error.error.into_bytes()))
+            .await
     }
 }

@@ -29,7 +29,7 @@ pub trait IntoResponse {
 
 impl IntoResponse for ServerResponse {
     fn create(code: StatusCode, body: ResponseBody) -> Self {
-        Self::create_base(code, vec![], Some(body))
+        Self::create_base(code, vec![("Content-Type", "text/plain")], Some(body))
     }
     fn download(filename: &str, body: ResponseBody) -> Self {
         Self::create_base(
