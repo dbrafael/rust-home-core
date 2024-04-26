@@ -8,4 +8,7 @@ edition = "2021"
 [dependencies]
 http = "1.1.0"
 regex = "1.10.4"
+rustls = "0.23.5"
+rustls-pemfile = "2.1.2"
 tokio = { version = "1.37.0", features = [ "full" ] }
+tokio-rustls = "0.26.0"

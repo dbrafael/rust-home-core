@@ -1,11 +1,10 @@
-mod endpoint;
-mod parser;
-mod router;
+pub mod parser;
+pub mod router;
 
-pub use parser::PathArgumentMap;
-pub use router::RequestType;
-pub use router::Router;
+use router::PathArguments;
 
-use super::{ServerRequest, ServerResponse, ServerResult};
+use super::request::ServerRequest;
+use super::response::ServerResponse;
+use super::ServerResult;
 
-pub type RequestHandler = fn(ServerRequest, PathArgumentMap) -> ServerResult<ServerResponse>;
+pub type RequestHandler = fn(ServerRequest, PathArguments) -> ServerResult<ServerResponse>;

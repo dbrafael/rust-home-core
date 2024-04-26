@@ -26,6 +26,7 @@ impl BasicResponse for ServerResponse {}
 
 pub trait IntoResponse {
     fn create(code: StatusCode, body: ResponseBody) -> Self;
+    fn html(body: String) -> Self;
     fn file(filename: &str) -> ServerResult<ServerResponse>;
     fn download(filename: &str, body: ResponseBody) -> Self;
     fn json(body: &str) -> Self;
@@ -36,18 +37,25 @@ impl IntoResponse for ServerResponse {
     fn create(code: StatusCode, body: ResponseBody) -> Self {
         Self::create_base(code, vec![("Content-Type", "text/plain")], Some(body))
     }
-    fn file(filename: &str) -> ServerResult<Self> {
-        match fs::read(filename) {
-            Ok(body) => Ok(ServerResponse::download(filename, body)),
-            Err(e) => Err(ServerError::new(StatusCode::NOT_FOUND, &format!("{}", e))),
-        }
+    fn html(body: String) -> Self {
+        Self::create_base(
+            StatusCode::OK,
+            vec![("Content-Type", "text/html")],
+            Some(body.into()),
+        )
     }
+    fn file(filename: &str) -> ServerResult<Self> {
+        let fc = fs::read(filename)
+            .map_err(|e| ServerError::new(StatusCode::NOT_FOUND, &e.to_string()))?;
+        Ok(ServerResponse::download(filename, fc))
+    }
+
     fn download(filename: &str, body: ResponseBody) -> Self {
         Self::create_base(
             StatusCode::OK,
             vec![(
                 "Content-Disposition",
-                &format!("attachment; filename=\"{}\"", filename),
+                &format!("attachment; filename=\"{filename}\""),
             )],
             Some(body),
         )
