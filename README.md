@@ -4,3 +4,6 @@ This project is setup for me to learn some of rust's more complex features. Code
 
 
 it officially works though :)
+
+Things so far
+- Http(s) server
